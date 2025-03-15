@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import useVideos from '../hooks/useVideos';
@@ -8,9 +8,11 @@ import path from 'path-browserify';
 const VideoDetail = () => {
   const { videoId } = useParams();
   const navigate = useNavigate();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, token } = useAuth();
   const [currentKeyframe, setCurrentKeyframe] = useState(null);
+  const [selectedKeyframes, setSelectedKeyframes] = useState([]);
   const [error, setError] = useState('');
+  const [extractClipLoading, setExtractClipLoading] = useState(false);
   
   const { 
     videoDetails,
@@ -31,7 +33,8 @@ const VideoDetail = () => {
     connected,
     keyframeStatus,
     keyframeProgress,
-    extractKeyframes
+    extractKeyframes,
+    socket
   } = useSocket();
   
   useEffect(() => {
@@ -43,6 +46,114 @@ const VideoDetail = () => {
   // Get current keyframe extraction status
   const currentKeyframeStatus = keyframeStatus[videoId];
   const currentKeyframeProgress = keyframeProgress[videoId];
+  
+  // Handle keyframe selection
+  const handleKeyframeSelect = useCallback((keyframe, index, allKeyframes) => {
+    setCurrentKeyframe(keyframe);
+    
+    // If this is the first keyframe selection
+    if (selectedKeyframes.length === 0) {
+      setSelectedKeyframes([index]);
+      return;
+    }
+    
+    // If clicking the same keyframe, deselect everything
+    if (selectedKeyframes.length === 1 && selectedKeyframes[0] === index) {
+      setSelectedKeyframes([]);
+      return;
+    }
+    
+    // Get the min and max from existing selection
+    const minSelected = Math.min(...selectedKeyframes);
+    const maxSelected = Math.max(...selectedKeyframes);
+    
+    // If new selection is outside current range, clear and start new selection
+    if (index < minSelected - 1 || index > maxSelected + 1) {
+      setSelectedKeyframes([index]);
+      return;
+    }
+    
+    // Calculate new selection range
+    let newSelection = [];
+    
+    // If selecting earlier frame, select all frames between new index and previous min
+    if (index < minSelected) {
+      for (let i = index; i <= maxSelected; i++) {
+        newSelection.push(i);
+      }
+    } 
+    // If selecting later frame, select all frames between previous max and new index
+    else if (index > maxSelected) {
+      for (let i = minSelected; i <= index; i++) {
+        newSelection.push(i);
+      }
+    }
+    // If within current selection, update to selection between min and clicked index
+    else {
+      for (let i = minSelected; i <= index; i++) {
+        newSelection.push(i);
+      }
+    }
+    
+    setSelectedKeyframes(newSelection);
+  }, [selectedKeyframes]);
+  
+  // Extract clip based on selected keyframes
+  const handleExtractClip = async () => {
+    if (selectedKeyframes.length < 2) {
+      setError('Please select at least two keyframes to extract a clip');
+      return;
+    }
+    
+    setError('');
+    setExtractClipLoading(true);
+    
+    try {
+      // Calculate start and end timestamps
+      const allKeyframes = currentKeyframeStatus?.keyframes || keyframes.map(k => k.url);
+      const minIndex = Math.min(...selectedKeyframes);
+      const maxIndex = Math.max(...selectedKeyframes);
+      
+      // Estimate video duration and timestamps
+      const totalKeyframes = allKeyframes.length;
+      const videoDuration = videoDetails.video.duration || 0; // Duration in seconds
+      
+      // Calculate approximate start and end times in seconds
+      const startTime = (minIndex / totalKeyframes) * videoDuration;
+      const endTime = (maxIndex / totalKeyframes) * videoDuration;
+      
+      // Send request to server to extract clip
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/videos/${videoId}/extract-clip`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          startTime, 
+          endTime,
+          socketId: socket?.id
+        }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to extract clip');
+      }
+      
+      // Reset selection after successful extraction
+      setSelectedKeyframes([]);
+      
+      // Refresh video details to show the new clip
+      await fetchVideoDetails(videoId);
+    } catch (err) {
+      console.error('Error extracting clip:', err);
+      setError(err.message || 'Failed to extract clip');
+    } finally {
+      setExtractClipLoading(false);
+    }
+  };
   
   const handleExtractKeyframes = async () => {
     setError('');
@@ -557,24 +668,63 @@ const VideoDetail = () => {
               </div>
             )}
             
+            {/* Extract Clip Button */}
+            {selectedKeyframes.length > 0 && (
+              <div className="mb-4">
+                <div className="flex space-x-3 mb-2">
+                  <button
+                    onClick={handleExtractClip}
+                    disabled={extractClipLoading || selectedKeyframes.length < 2}
+                    className={`inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white ${
+                      !extractClipLoading && selectedKeyframes.length >= 2
+                        ? 'bg-purple-600 hover:bg-purple-700' 
+                        : 'bg-gray-400'
+                    } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500`}
+                  >
+                    {extractClipLoading ? 'Extracting Clip...' : 'Extract Clip'}
+                  </button>
+                  
+                  <button
+                    onClick={() => setSelectedKeyframes([])}
+                    className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 dark:text-white dark:border-gray-600 dark:bg-slate-700 dark:hover:bg-slate-600 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  >
+                    Clear Selection
+                  </button>
+                </div>
+                
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  {selectedKeyframes.length === 1 
+                    ? 'Select another keyframe to create a clip' 
+                    : `Selected ${selectedKeyframes.length} keyframes`}
+                </p>
+                {error && (
+                  <p className="text-red-600 text-sm mt-2">{error}</p>
+                )}
+              </div>
+            )}
+            
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
               {(currentKeyframeStatus?.keyframes || keyframes.map(k => k.url)).map((keyframe, index) => {
                 const allKeyframes = currentKeyframeStatus?.keyframes || keyframes.map(k => k.url);
                 const captionText = Object.keys(captionData).length > 0 ? 
                   findCaptionForKeyframe(index, allKeyframes.length) : null;
                 
+                // Check if this keyframe is in the selected range
+                const isSelected = selectedKeyframes.includes(index);
+                
                 return (
                   <div 
                     key={index}
                     className={`cursor-pointer hover:opacity-75 transition-opacity duration-200 flex flex-col ${
+                      isSelected ? 'ring-4 ring-purple-500 dark:ring-purple-400 rounded-md' : 
                       currentKeyframe === keyframe ? 'ring-4 ring-blue-500 dark:ring-blue-400 rounded-md' : ''
                     }`}
                   >
-                    <div className="aspect-w-16 aspect-h-9 mb-2" onClick={() => setCurrentKeyframe(keyframe)}>
+                    <div className="aspect-w-16 aspect-h-9 mb-2" onClick={() => handleKeyframeSelect(keyframe, index, allKeyframes)}>
                       <img 
                         src={keyframe.startsWith('http') ? keyframe : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${keyframe}`} 
                         alt={`Keyframe ${index + 1}`} 
-                        className="object-cover w-full h-full rounded-md shadow-sm" 
+                        className={`object-cover w-full h-full rounded-md shadow-sm ${isSelected ? 'opacity-90 border-purple-500' : ''}`}
                         onError={(e) => {
                           console.error('Failed to load image:', keyframe);
                           e.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjY2NjIi8+PHRleHQgeD0iNSIgeT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmaWxsPSIjMzMzIj4/PC90ZXh0Pjwvc3ZnPg==';

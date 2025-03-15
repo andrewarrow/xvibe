@@ -422,6 +422,67 @@ app.post('/api/videos/:id/keyframes', authenticateToken, (req, res) => {
   }
 });
 
+// Extract clip from video based on keyframe selection
+app.post('/api/videos/:id/extract-clip', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { startTime, endTime, socketId } = req.body;
+  const userId = req.user.id;
+  
+  if (startTime === undefined || endTime === undefined) {
+    return res.status(400).json({ message: 'Start and end times are required' });
+  }
+  
+  try {
+    // Get video details
+    const video = db.prepare(`
+      SELECT * FROM videos 
+      WHERE id = ? AND user_id = ?
+    `).get(id, userId);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+    
+    if (video.status !== 'completed') {
+      return res.status(400).json({ message: 'Video is not ready for clip extraction' });
+    }
+    
+    // Generate clip ID and setup paths
+    const clipId = uuidv4();
+    const formattedStart = Math.floor(startTime);
+    const formattedEnd = Math.ceil(endTime);
+    const clipDuration = formattedEnd - formattedStart;
+    
+    const outputFilename = `clip_${formattedStart}_${formattedEnd}.mp4`;
+    const outputPath = path.join(video.directory_path, outputFilename);
+    
+    // Create clip entry in database
+    db.prepare(`
+      INSERT INTO videos 
+      (user_id, title, original_url, status, filename, file_path, directory_path, download_id, parent_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      userId, 
+      `${video.title} (Clip ${formattedStart}s-${formattedEnd}s)`, 
+      video.original_url, 
+      'converting', 
+      outputFilename, 
+      outputPath, 
+      video.directory_path,
+      clipId,
+      video.id
+    );
+    
+    res.json({ message: 'Clip extraction started', clipId });
+    
+    // Start the extraction process (defined below)
+    extractClip(video.file_path, outputPath, formattedStart, clipDuration, clipId, socketId);
+  } catch (error) {
+    console.error('Error starting clip extraction:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Convert video to MP4
 app.post('/api/convert-video', authenticateToken, (req, res) => {
   const { videoId, socketId } = req.body;
@@ -857,6 +918,107 @@ function timeToMs(timeStr) {
     return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
   }
   return 0;
+}
+
+// Function to extract clip from video
+function extractClip(inputPath, outputPath, startTime, duration, clipId, socketId) {
+  const socket = socketId ? io.to(socketId) : io;
+  socket.emit('conversion_status', { 
+    id: clipId, 
+    status: 'started',
+    message: 'Clip extraction started...' 
+  });
+  
+  // Format start time as HH:MM:SS
+  const formatTimeForFFmpeg = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+  
+  const ffmpegStartTime = formatTimeForFFmpeg(startTime);
+  
+  // Run FFmpeg for clip extraction
+  const ffmpegCmd = `ffmpeg -ss ${ffmpegStartTime} -i "${inputPath}" -t ${duration} -c:v libx264 -c:a aac -strict experimental "${outputPath}" -y -progress pipe:1`;
+  
+  const extractionProcess = exec(ffmpegCmd, (error) => {
+    if (error) {
+      console.error(`Error extracting clip: ${error.message}`);
+      updateVideoStatus(clipId, 'error');
+      socket.emit('conversion_status', { 
+        id: clipId, 
+        status: 'error',
+        message: `Error extracting clip: ${error.message}` 
+      });
+      return;
+    }
+    
+    // Update file size
+    fs.stat(outputPath, (err, stats) => {
+      const fileSize = err ? 0 : stats.size;
+      
+      // Update video status to completed
+      db.prepare(`
+        UPDATE videos 
+        SET status = ?, file_size = ? 
+        WHERE download_id = ?
+      `).run('completed', fileSize, clipId);
+      
+      socket.emit('conversion_status', { 
+        id: clipId, 
+        status: 'completed',
+        message: 'Clip extraction complete!',
+        filename: path.basename(outputPath)
+      });
+    });
+  });
+  
+  // Parse FFmpeg progress
+  extractionProcess.stdout.on('data', (data) => {
+    const output = data.toString();
+    console.log(`FFmpeg stdout: ${output}`);
+    
+    // Extract progress info
+    let progress = {};
+    output.split('\n').forEach(line => {
+      const [key, value] = line.split('=');
+      if (key && value) {
+        progress[key.trim()] = value.trim();
+      }
+    });
+    
+    if (progress.out_time_ms && progress.total_size) {
+      // Calculate progress percentage
+      let percent = 0;
+      
+      if (duration) {
+        const totalMs = duration * 1000;
+        const currentMs = parseInt(progress.out_time_ms, 10);
+        percent = Math.min(Math.round((currentMs / totalMs) * 100), 100);
+      }
+      
+      const formattedTime = formatTime(progress.out_time);
+      const message = `Extracting clip: ${formattedTime} / ${formatTimeForFFmpeg(duration)} (${percent}%)`;
+      
+      socket.emit('conversion_progress', { 
+        id: clipId, 
+        progress: percent,
+        message,
+        details: {
+          currentTime: formattedTime,
+          totalTime: formatTimeForFFmpeg(duration),
+          bitrate: progress.bitrate || 'unknown',
+          speed: progress.speed || '1x'
+        }
+      });
+    }
+  });
+  
+  extractionProcess.stderr.on('data', (data) => {
+    const output = data.toString();
+    console.log(`FFmpeg stderr: ${output}`);
+  });
 }
 
 // Helper function to update video status in database
