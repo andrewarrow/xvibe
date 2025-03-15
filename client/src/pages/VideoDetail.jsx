@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import useVideos from '../hooks/useVideos';
 import useSocket from '../hooks/useSocket';
+import path from 'path-browserify';
 
 const VideoDetail = () => {
   const { videoId } = useParams();
@@ -16,8 +17,12 @@ const VideoDetail = () => {
     detailsLoading, 
     detailsError,
     fetchVideoDetails,
-    formatBytes
+    formatBytes,
+    downloadCaptions
   } = useVideos();
+  
+  const [captionLoading, setCaptionLoading] = useState(false);
+  const [captionError, setCaptionError] = useState('');
   
   const {
     connected,
@@ -43,6 +48,50 @@ const VideoDetail = () => {
       await extractKeyframes(videoId);
     } catch (err) {
       setError(err.message || 'Failed to start keyframe extraction');
+    }
+  };
+  
+  const handleDownloadCaptions = async () => {
+    setCaptionError('');
+    setCaptionLoading(true);
+    
+    try {
+      // Extract YouTube video ID from the original URL
+      let youtubeId = '';
+      
+      if (video && video.original_url) {
+        // Extract video ID using regex patterns for different YouTube URL formats
+        const patterns = [
+          /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/user\/\w+\/\w+\/|youtube\.com\/\w+\/\w+\/|youtube\.com\/attribution_link\?[^=]*=|youtube\.com\/attribution_link\?a=[^=]*=|youtube\.com\/[^\/]+\?[^&]*[&;]v=)([^"&?\/\s]{11})/,
+          /(?:youtube\.com\/shorts\/|youtube\.com\/live\/)([^"&?\/\s]{11})/,
+          /(?:youtube\.com\/playlist\?[^&]*list=)([^"&?\s]+)/
+        ];
+        
+        for (const pattern of patterns) {
+          const match = video.original_url.match(pattern);
+          if (match && match[1]) {
+            youtubeId = match[1];
+            break;
+          }
+        }
+      }
+      
+      if (!youtubeId) {
+        throw new Error('Could not extract YouTube video ID from the URL');
+      }
+      
+      console.log('Extracted YouTube ID:', youtubeId);
+      
+      // Pass the video ID to the server
+      const result = await downloadCaptions(videoId, youtubeId);
+      console.log('Captions downloaded:', result);
+      
+      // Refresh video details to show new caption info
+      await fetchVideoDetails(videoId);
+    } catch (err) {
+      setCaptionError(err.message || 'Failed to download captions');
+    } finally {
+      setCaptionLoading(false);
     }
   };
   
@@ -165,9 +214,10 @@ const VideoDetail = () => {
                 </div>
               )}
               
-              {/* Keyframe Extraction Button */}
+              {/* Action Buttons */}
               {video.status === 'completed' && (
-                <div className="mt-4">
+                <div className="mt-4 space-y-3">
+                  {/* Keyframe Extraction Button */}
                   <button
                     onClick={handleExtractKeyframes}
                     disabled={!connected || currentKeyframeStatus?.status === 'started'}
@@ -182,6 +232,48 @@ const VideoDetail = () => {
                   
                   {error && (
                     <p className="text-red-600 text-sm mt-2">{error}</p>
+                  )}
+                  
+                  {/* Get Text Button */}
+                  <button
+                    onClick={handleDownloadCaptions}
+                    disabled={captionLoading}
+                    className={`w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white ${
+                      !captionLoading 
+                        ? 'bg-green-600 hover:bg-green-700' 
+                        : 'bg-gray-400'
+                    } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500`}
+                  >
+                    {captionLoading ? 'Downloading Text...' : 'Get Text'}
+                  </button>
+                  
+                  {captionError && (
+                    <p className="text-red-600 text-sm mt-2">{captionError}</p>
+                  )}
+                  
+                  {/* Show caption info if available */}
+                  {video.captions_path && (
+                    <div className="mt-3 p-2 bg-gray-100 dark:bg-slate-700 rounded-md">
+                      <p className="text-sm text-gray-700 dark:text-gray-300 mb-2">
+                        Captions saved successfully!
+                      </p>
+                      <div className="flex space-x-2">
+                        <a 
+                          href={`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/captions/${path.basename(video.directory_path)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+                        >
+                          View Online
+                        </a>
+                        <a 
+                          href={`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/captions/${path.basename(video.directory_path)}?download=true`}
+                          className="text-sm text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300"
+                        >
+                          Download File
+                        </a>
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

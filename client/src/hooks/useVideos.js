@@ -97,6 +97,36 @@ const useVideos = () => {
     setVideoDetails(null);
   }, []);
 
+  // Download captions for a video
+  const downloadCaptions = useCallback(async (videoId, youtubeId) => {
+    if (!isAuthenticated || !token || !videoId || !youtubeId) {
+      throw new Error('Missing required parameters');
+    }
+    
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/videos/${videoId}/captions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ youtubeId })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to download captions');
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error downloading captions:', error);
+      throw error;
+    }
+  }, [isAuthenticated, token]);
+  
   return {
     videos,
     videoDetails,
@@ -107,7 +137,8 @@ const useVideos = () => {
     refreshVideos: fetchVideos,
     fetchVideoDetails,
     clearVideoDetails,
-    formatBytes
+    formatBytes,
+    downloadCaptions
   };
 };
 

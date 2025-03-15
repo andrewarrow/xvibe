@@ -38,6 +38,49 @@ if (!fs.existsSync(videosDir)) {
 // Serve static files from videos directory (requires authentication)
 app.use('/videos', authenticateToken, express.static(videosDir));
 
+// Serve caption files through the API - no authentication for direct access
+app.get('/api/captions/:uuid', (req, res) => {
+  const { uuid } = req.params;
+  
+  // Get video info
+  const video = db.prepare(`
+    SELECT * FROM videos 
+    WHERE directory_path LIKE ? AND captions_path IS NOT NULL
+    LIMIT 1
+  `).get(`%${uuid}%`);
+  
+  if (!video || !video.captions_path) {
+    return res.status(404).json({ message: 'Captions not found' });
+  }
+  
+  // Set CORS headers
+  res.set({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Cache-Control': 'public, max-age=86400' // Cache for 24 hours
+  });
+  
+  // Check if file exists
+  if (fs.existsSync(video.captions_path)) {
+    // Set content type for WebVTT
+    res.set('Content-Type', 'text/vtt');
+    
+    // Handle download parameter
+    const download = req.query.download === 'true';
+    if (download) {
+      res.set('Content-Disposition', 'attachment; filename=captions.vtt');
+    } else {
+      res.set('Content-Disposition', 'inline');
+    }
+    
+    // Send the file
+    fs.createReadStream(video.captions_path).pipe(res);
+  } else {
+    res.status(404).send('Captions file not found');
+  }
+});
+
 // Serve keyframe images through the API route to avoid conflicts with the frontend
 app.get('/api/keyframe-images/:uuid/:filename', (req, res) => {
   // Set CORS headers for images to allow them to be loaded in the frontend
@@ -105,6 +148,96 @@ app.use(express.json());
 
 // Routes
 app.use('/api/auth', authRoutes);
+
+// Download YouTube captions
+app.post('/api/videos/:id/captions', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { youtubeId } = req.body;
+  const userId = req.user.id;
+  
+  if (!youtubeId) {
+    return res.status(400).json({ message: 'YouTube video ID is required' });
+  }
+  
+  try {
+    // Get video details
+    const video = db.prepare(`
+      SELECT * FROM videos 
+      WHERE id = ? AND user_id = ?
+    `).get(id, userId);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+    
+    // Import node-fetch dynamically (ESM compatibility)
+    const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+    
+    // First try to get the available caption tracks
+    console.log(`Fetching captions for YouTube ID: ${youtubeId}`);
+    
+    // Try multiple caption approaches (regular captions and auto-generated)
+    const captionUrls = [
+      `https://www.youtube.com/api/timedtext?v=${youtubeId}&lang=en&fmt=vtt`,
+      `https://www.youtube.com/api/timedtext?v=${youtubeId}&lang=en&kind=asr&fmt=vtt`, // Auto-generated
+      `https://www.youtube.com/api/timedtext?v=${youtubeId}&kind=asr&lang=en&fmt=vtt`,  // Alternative auto-generated format
+      `https://www.youtube.com/api/timedtext?v=${youtubeId}&fmt=vtt` // Any available caption
+    ];
+    
+    let captionData = null;
+    let successUrl = null;
+    
+    // Try each URL until one works
+    for (const url of captionUrls) {
+      console.log(`Trying to fetch captions from: ${url}`);
+      
+      try {
+        const response = await fetch(url);
+        
+        if (response.ok) {
+          const text = await response.text();
+          
+          // Check if we got valid VTT content
+          if (text.includes('WEBVTT') && text.length > 20) {
+            captionData = text;
+            successUrl = url;
+            console.log(`Successfully fetched captions from: ${url}`);
+            break;
+          } else {
+            console.log(`Got invalid caption data from ${url}, length: ${text.length}`);
+          }
+        }
+      } catch (err) {
+        console.log(`Error fetching from ${url}:`, err.message);
+      }
+    }
+    
+    if (!captionData) {
+      throw new Error('No captions available for this video. Tried multiple caption sources.');
+    }
+    
+    console.log(`Successfully downloaded captions from: ${successUrl}`);
+    
+    // Save to file
+    const captionsPath = path.join(video.directory_path, 'captions.vtt');
+    fs.writeFileSync(captionsPath, captionData);
+    
+    // Update database with captions path
+    db.prepare(`
+      UPDATE videos 
+      SET captions_path = ? 
+      WHERE id = ?
+    `).run(captionsPath, id);
+    
+    res.json({ 
+      message: 'Captions downloaded successfully',
+      captionsPath
+    });
+  } catch (error) {
+    console.error('Error downloading captions:', error);
+    res.status(500).json({ message: `Error downloading captions: ${error.message}` });
+  }
+});
 
 // YouTube download endpoint
 app.post('/api/download-video', authenticateToken, (req, res) => {

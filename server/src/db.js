@@ -34,10 +34,21 @@ export const initializeDatabase = () => {
       directory_path TEXT NOT NULL,
       file_size INTEGER,
       download_id TEXT NOT NULL,
+      captions_path TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
+  
+  // Add captions_path column if it doesn't exist (migration 2)
+  try {
+    db.prepare('SELECT captions_path FROM videos LIMIT 1').get();
+  } catch (error) {
+    if (error.message.includes('no such column')) {
+      console.log('Adding captions_path column to videos table...');
+      db.exec('ALTER TABLE videos ADD COLUMN captions_path TEXT');
+    }
+  }
   
   // Create keyframes table
   db.exec(`
