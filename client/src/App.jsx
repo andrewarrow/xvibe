@@ -3,6 +3,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import Home from './pages/Home';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import Dashboard from './pages/Dashboard';
 import { useAuth } from './hooks/useAuth';
 
 // Protected route component
@@ -24,6 +25,11 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/dashboard" element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          } />
         </Routes>
       </AuthProvider>
     </Router>
