@@ -1,6 +1,7 @@
 # XVibe
 
 ![screenshot](https://i.imgur.com/fdsRPxQ.png)
+![screenshot](https://i.imgur.com/3Zkxzcb.png)
 
 
 A simple web application with a React frontend and Node.js backend using SQLite database.
