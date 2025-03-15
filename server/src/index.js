@@ -170,69 +170,88 @@ app.post('/api/videos/:id/captions', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Video not found' });
     }
     
-    // Import node-fetch dynamically (ESM compatibility)
-    const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-    
-    // First try to get the available caption tracks
     console.log(`Fetching captions for YouTube ID: ${youtubeId}`);
     
-    // Try multiple caption approaches (regular captions and auto-generated)
-    const captionUrls = [
-      `https://www.youtube.com/api/timedtext?v=${youtubeId}&lang=en&fmt=vtt`,
-      `https://www.youtube.com/api/timedtext?v=${youtubeId}&lang=en&kind=asr&fmt=vtt`, // Auto-generated
-      `https://www.youtube.com/api/timedtext?v=${youtubeId}&kind=asr&lang=en&fmt=vtt`,  // Alternative auto-generated format
-      `https://www.youtube.com/api/timedtext?v=${youtubeId}&fmt=vtt` // Any available caption
-    ];
-    
-    let captionData = null;
-    let successUrl = null;
-    
-    // Try each URL until one works
-    for (const url of captionUrls) {
-      console.log(`Trying to fetch captions from: ${url}`);
-      
-      try {
-        const response = await fetch(url);
-        
-        if (response.ok) {
-          const text = await response.text();
-          
-          // Check if we got valid VTT content
-          if (text.includes('WEBVTT') && text.length > 20) {
-            captionData = text;
-            successUrl = url;
-            console.log(`Successfully fetched captions from: ${url}`);
-            break;
-          } else {
-            console.log(`Got invalid caption data from ${url}, length: ${text.length}`);
-          }
-        }
-      } catch (err) {
-        console.log(`Error fetching from ${url}:`, err.message);
-      }
-    }
-    
-    if (!captionData) {
-      throw new Error('No captions available for this video. Tried multiple caption sources.');
-    }
-    
-    console.log(`Successfully downloaded captions from: ${successUrl}`);
-    
-    // Save to file
+    // Use yt-dlp to download captions
+    const videoUrl = `https://www.youtube.com/watch?v=${youtubeId}`;
     const captionsPath = path.join(video.directory_path, 'captions.vtt');
-    fs.writeFileSync(captionsPath, captionData);
     
-    // Update database with captions path
-    db.prepare(`
-      UPDATE videos 
-      SET captions_path = ? 
-      WHERE id = ?
-    `).run(captionsPath, id);
-    
-    res.json({ 
-      message: 'Captions downloaded successfully',
-      captionsPath
+    // Run yt-dlp with skip-download and write-sub options
+    return new Promise((resolve, reject) => {
+      const ytDlpProcess = exec(
+        `yt-dlp --skip-download --write-auto-sub --sub-lang en "${videoUrl}" -o "${path.join(video.directory_path, 'captions')}"`,
+        (error, stdout, stderr) => {
+          if (error) {
+            console.error(`Error running yt-dlp for captions: ${error.message}`);
+            console.error(`stderr: ${stderr}`);
+            return reject(new Error(`Failed to download captions: ${error.message}`));
+          }
+          
+          console.log(`yt-dlp output: ${stdout}`);
+          
+          // Look for the downloaded caption file (yt-dlp will add the extension)
+          const captionFiles = fs.readdirSync(video.directory_path)
+            .filter(file => file.startsWith('captions.') && 
+              (file.endsWith('.vtt') || file.endsWith('.srt') || 
+               file.endsWith('.en.vtt') || file.endsWith('.en.srt')));
+          
+          if (captionFiles.length === 0) {
+            return reject(new Error('No caption files found after download.'));
+          }
+          
+          // Use the first caption file found
+          const captionFile = captionFiles[0];
+          const fullCaptionPath = path.join(video.directory_path, captionFile);
+          
+          // Rename to captions.vtt if needed
+          if (captionFile !== 'captions.vtt') {
+            try {
+              // Read the content
+              const captionContent = fs.readFileSync(fullCaptionPath, 'utf8');
+              
+              // Write to captions.vtt
+              fs.writeFileSync(captionsPath, captionContent);
+              
+              // Remove the original file
+              fs.unlinkSync(fullCaptionPath);
+              
+              console.log(`Renamed caption file from ${captionFile} to captions.vtt`);
+            } catch (renameError) {
+              console.error(`Error renaming caption file: ${renameError.message}`);
+              // Still continue with the original filename
+              return reject(new Error(`Error processing caption file: ${renameError.message}`));
+            }
+          }
+          
+          // Update database with captions path
+          db.prepare(`
+            UPDATE videos 
+            SET captions_path = ? 
+            WHERE id = ?
+          `).run(captionsPath, id);
+          
+          resolve();
+        }
+      );
+      
+      ytDlpProcess.stdout.on('data', (data) => {
+        console.log(`yt-dlp stdout: ${data}`);
+      });
+      
+      ytDlpProcess.stderr.on('data', (data) => {
+        console.log(`yt-dlp stderr: ${data}`);
+      });
+    })
+    .then(() => {
+      res.json({ 
+        message: 'Captions downloaded successfully',
+        captionsPath
+      });
+    })
+    .catch((error) => {
+      throw error;
     });
+    
   } catch (error) {
     console.error('Error downloading captions:', error);
     res.status(500).json({ message: `Error downloading captions: ${error.message}` });
