@@ -109,18 +109,43 @@ const VideoDetail = () => {
     setExtractClipLoading(true);
     
     try {
+      // Get video duration - either from metadata or estimate
+      let videoDuration = 0;
+      if (videoDetails.video.duration) {
+        videoDuration = videoDetails.video.duration;
+      } else {
+        // Try to get duration from the conversionProgress data
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+        const videoDurationResponse = await fetch(`${API_URL}/api/videos/${videoId}/duration`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (videoDurationResponse.ok) {
+          const durationData = await videoDurationResponse.json();
+          videoDuration = durationData.duration || 300; // Default to 5 minutes if unknown
+        } else {
+          videoDuration = 300; // Default to 5 minutes if duration can't be fetched
+        }
+      }
+      
       // Calculate start and end timestamps
       const allKeyframes = currentKeyframeStatus?.keyframes || keyframes.map(k => k.url);
       const minIndex = Math.min(...selectedKeyframes);
       const maxIndex = Math.max(...selectedKeyframes);
-      
-      // Estimate video duration and timestamps
       const totalKeyframes = allKeyframes.length;
-      const videoDuration = videoDetails.video.duration || 0; // Duration in seconds
+      
+      // Add safety margin to make sure we don't cut too tight
+      // This helps ensure we get some content in the clip
+      videoDuration = Math.max(videoDuration, 30); // Ensure at least 30s for calculations
       
       // Calculate approximate start and end times in seconds
-      const startTime = (minIndex / totalKeyframes) * videoDuration;
-      const endTime = (maxIndex / totalKeyframes) * videoDuration;
+      // Use a slightly more aggressive calculation to ensure we get content
+      const startTime = Math.max(0, Math.floor((minIndex / totalKeyframes) * videoDuration) - 1);
+      const endTime = Math.min(videoDuration, Math.ceil((maxIndex / totalKeyframes) * videoDuration) + 1);
+      
+      console.log(`Extracting clip from ${startTime}s to ${endTime}s (duration: ${endTime - startTime}s)`);
       
       // Send request to server to extract clip
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -583,6 +608,12 @@ const VideoDetail = () => {
                         <div className="text-sm font-medium text-gray-900 dark:text-white">
                           {version.title || 'Unknown Title'}
                         </div>
+                        {/* Show clip badge if filename indicates it's a clip */}
+                        {version.filename && version.filename.startsWith('clip_') && (
+                          <span className="inline-flex items-center px-2.5 py-0.5 mt-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+                            Clip
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
@@ -692,11 +723,31 @@ const VideoDetail = () => {
                   </button>
                 </div>
                 
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  {selectedKeyframes.length === 1 
-                    ? 'Select another keyframe to create a clip' 
-                    : `Selected ${selectedKeyframes.length} keyframes`}
-                </p>
+                {selectedKeyframes.length >= 2 && (
+                  <div className="mt-2 mb-2 p-2 bg-slate-100 dark:bg-slate-700 rounded">
+                    <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                      Clip Preview:
+                    </p>
+                    <div className="flex items-center mt-1 space-x-1">
+                      <span className="text-xs bg-slate-200 dark:bg-slate-600 px-2 py-1 rounded-md">
+                        Start: Frame {Math.min(...selectedKeyframes) + 1}
+                      </span>
+                      <span className="text-gray-500 dark:text-gray-400">→</span>
+                      <span className="text-xs bg-slate-200 dark:bg-slate-600 px-2 py-1 rounded-md">
+                        End: Frame {Math.max(...selectedKeyframes) + 1}
+                      </span>
+                      <span className="text-xs text-gray-600 dark:text-gray-400 ml-2">
+                        ({selectedKeyframes.length} frames selected)
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {selectedKeyframes.length === 1 && (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    Select another keyframe to create a clip
+                  </p>
+                )}
+                
                 {error && (
                   <p className="text-red-600 text-sm mt-2">{error}</p>
                 )}

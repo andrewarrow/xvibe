@@ -1,7 +1,6 @@
 # XVibe
 
 ![screenshot](https://i.imgur.com/fdsRPxQ.png)
-![screenshot](https://i.imgur.com/3Zkxzcb.png)
 ![screenshot](https://i.imgur.com/AyhNThi.png)
 
 

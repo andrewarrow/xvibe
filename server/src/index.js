@@ -449,9 +449,19 @@ app.post('/api/videos/:id/extract-clip', authenticateToken, (req, res) => {
     
     // Generate clip ID and setup paths
     const clipId = uuidv4();
-    const formattedStart = Math.floor(startTime);
-    const formattedEnd = Math.ceil(endTime);
+    
+    // Make sure start is always less than end
+    const formattedStart = Math.min(Math.floor(startTime), Math.floor(endTime));
+    const formattedEnd = Math.max(Math.ceil(startTime), Math.ceil(endTime));
+    
+    // Calculate actual clip duration (not just end-start)
+    // This will be recalculated in the extractClip function
     const clipDuration = formattedEnd - formattedStart;
+    
+    // Make sure we have at least 1 second duration
+    if (clipDuration < 1) {
+      return res.status(400).json({ message: 'Clip duration must be at least 1 second' });
+    }
     
     const outputFilename = `clip_${formattedStart}_${formattedEnd}.mp4`;
     const outputPath = path.join(video.directory_path, outputFilename);
@@ -920,6 +930,42 @@ function timeToMs(timeStr) {
   return 0;
 }
 
+// Get video duration
+app.get('/api/videos/:id/duration', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  
+  try {
+    // Get video details
+    const video = db.prepare(`
+      SELECT * FROM videos 
+      WHERE id = ? AND user_id = ?
+    `).get(id, userId);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+    
+    // Use ffprobe to get duration
+    const ffprobeCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${video.file_path}"`;
+    
+    exec(ffprobeCmd, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error getting video duration: ${error.message}`);
+        return res.status(500).json({ message: 'Error getting video duration' });
+      }
+      
+      const duration = parseFloat(stdout.trim());
+      
+      // Return the duration
+      res.json({ duration });
+    });
+  } catch (error) {
+    console.error('Error getting video duration:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Function to extract clip from video
 function extractClip(inputPath, outputPath, startTime, duration, clipId, socketId) {
   const socket = socketId ? io.to(socketId) : io;
@@ -939,85 +985,137 @@ function extractClip(inputPath, outputPath, startTime, duration, clipId, socketI
   
   const ffmpegStartTime = formatTimeForFFmpeg(startTime);
   
-  // Run FFmpeg for clip extraction
-  const ffmpegCmd = `ffmpeg -ss ${ffmpegStartTime} -i "${inputPath}" -t ${duration} -c:v libx264 -c:a aac -strict experimental "${outputPath}" -y -progress pipe:1`;
+  // Get video duration first to validate our parameters
+  const ffprobeCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`;
   
-  const extractionProcess = exec(ffmpegCmd, (error) => {
+  exec(ffprobeCmd, (error, stdout, stderr) => {
     if (error) {
-      console.error(`Error extracting clip: ${error.message}`);
+      console.error(`Error getting video duration: ${error.message}`);
       updateVideoStatus(clipId, 'error');
       socket.emit('conversion_status', { 
         id: clipId, 
         status: 'error',
-        message: `Error extracting clip: ${error.message}` 
+        message: `Error getting video duration: ${error.message}` 
       });
       return;
     }
     
-    // Update file size
-    fs.stat(outputPath, (err, stats) => {
-      const fileSize = err ? 0 : stats.size;
-      
-      // Update video status to completed
-      db.prepare(`
-        UPDATE videos 
-        SET status = ?, file_size = ? 
-        WHERE download_id = ?
-      `).run('completed', fileSize, clipId);
-      
+    const videoDuration = parseFloat(stdout.trim());
+    console.log(`Video duration: ${videoDuration} seconds`);
+    
+    // Adjust start time and duration to make sure they're within bounds
+    const adjustedStartTime = Math.max(0, Math.min(startTime, videoDuration - 1));
+    const adjustedDuration = Math.min(duration, videoDuration - adjustedStartTime);
+    
+    if (adjustedDuration < 0.5) {
+      console.error('Clip duration too short');
+      updateVideoStatus(clipId, 'error');
       socket.emit('conversion_status', { 
         id: clipId, 
-        status: 'completed',
-        message: 'Clip extraction complete!',
-        filename: path.basename(outputPath)
+        status: 'error',
+        message: 'Clip duration too short' 
+      });
+      return;
+    }
+    
+    console.log(`Adjusted parameters: startTime=${adjustedStartTime}, duration=${adjustedDuration}`);
+    
+    // Use a more reliable approach with FFmpeg:
+    // 1. Seek input file first with -ss for faster seeking
+    // 2. Then specify duration with -t
+    // 3. Copy codecs to avoid re-encoding when possible
+    const ffmpegCmd = `ffmpeg -ss ${formatTimeForFFmpeg(adjustedStartTime)} -i "${inputPath}" -t ${adjustedDuration} -c:v libx264 -c:a aac -strict experimental "${outputPath}" -y -progress pipe:1`;
+    
+    console.log(`Executing FFmpeg command: ${ffmpegCmd}`);
+    
+    const extractionProcess = exec(ffmpegCmd, (error) => {
+      if (error) {
+        console.error(`Error extracting clip: ${error.message}`);
+        updateVideoStatus(clipId, 'error');
+        socket.emit('conversion_status', { 
+          id: clipId, 
+          status: 'error',
+          message: `Error extracting clip: ${error.message}` 
+        });
+        return;
+      }
+      
+      // Update file size
+      fs.stat(outputPath, (err, stats) => {
+        const fileSize = err ? 0 : stats.size;
+        
+        if (fileSize < 1000) {
+          console.error(`Clip file too small (${fileSize} bytes), likely failed to extract`);
+          updateVideoStatus(clipId, 'error');
+          socket.emit('conversion_status', { 
+            id: clipId, 
+            status: 'error',
+            message: 'Generated clip file is too small, extraction failed' 
+          });
+          return;
+        }
+        
+        // Update video status to completed
+        db.prepare(`
+          UPDATE videos 
+          SET status = ?, file_size = ? 
+          WHERE download_id = ?
+        `).run('completed', fileSize, clipId);
+        
+        socket.emit('conversion_status', { 
+          id: clipId, 
+          status: 'completed',
+          message: 'Clip extraction complete!',
+          filename: path.basename(outputPath)
+        });
       });
     });
-  });
-  
-  // Parse FFmpeg progress
-  extractionProcess.stdout.on('data', (data) => {
-    const output = data.toString();
-    console.log(`FFmpeg stdout: ${output}`);
     
-    // Extract progress info
-    let progress = {};
-    output.split('\n').forEach(line => {
-      const [key, value] = line.split('=');
-      if (key && value) {
-        progress[key.trim()] = value.trim();
-      }
-    });
-    
-    if (progress.out_time_ms && progress.total_size) {
-      // Calculate progress percentage
-      let percent = 0;
+    // Parse FFmpeg progress
+    extractionProcess.stdout.on('data', (data) => {
+      const output = data.toString();
+      console.log(`FFmpeg stdout: ${output}`);
       
-      if (duration) {
-        const totalMs = duration * 1000;
-        const currentMs = parseInt(progress.out_time_ms, 10);
-        percent = Math.min(Math.round((currentMs / totalMs) * 100), 100);
-      }
-      
-      const formattedTime = formatTime(progress.out_time);
-      const message = `Extracting clip: ${formattedTime} / ${formatTimeForFFmpeg(duration)} (${percent}%)`;
-      
-      socket.emit('conversion_progress', { 
-        id: clipId, 
-        progress: percent,
-        message,
-        details: {
-          currentTime: formattedTime,
-          totalTime: formatTimeForFFmpeg(duration),
-          bitrate: progress.bitrate || 'unknown',
-          speed: progress.speed || '1x'
+      // Extract progress info
+      let progress = {};
+      output.split('\n').forEach(line => {
+        const [key, value] = line.split('=');
+        if (key && value) {
+          progress[key.trim()] = value.trim();
         }
       });
-    }
-  });
-  
-  extractionProcess.stderr.on('data', (data) => {
-    const output = data.toString();
-    console.log(`FFmpeg stderr: ${output}`);
+      
+      if (progress.out_time_ms && progress.total_size) {
+        // Calculate progress percentage
+        let percent = 0;
+        
+        if (adjustedDuration) {
+          const totalMs = adjustedDuration * 1000;
+          const currentMs = parseInt(progress.out_time_ms, 10);
+          percent = Math.min(Math.round((currentMs / totalMs) * 100), 100);
+        }
+        
+        const formattedTime = formatTime(progress.out_time);
+        const message = `Extracting clip: ${formattedTime} / ${formatTimeForFFmpeg(adjustedDuration)} (${percent}%)`;
+        
+        socket.emit('conversion_progress', { 
+          id: clipId, 
+          progress: percent,
+          message,
+          details: {
+            currentTime: formattedTime,
+            totalTime: formatTimeForFFmpeg(adjustedDuration),
+            bitrate: progress.bitrate || 'unknown',
+            speed: progress.speed || '1x'
+          }
+        });
+      }
+    });
+    
+    extractionProcess.stderr.on('data', (data) => {
+      const output = data.toString();
+      console.log(`FFmpeg stderr: ${output}`);
+    });
   });
 }
 

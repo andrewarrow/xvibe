@@ -50,6 +50,16 @@ export const initializeDatabase = () => {
     }
   }
   
+  // Add parent_id column if it doesn't exist (migration 3)
+  try {
+    db.prepare('SELECT parent_id FROM videos LIMIT 1').get();
+  } catch (error) {
+    if (error.message.includes('no such column')) {
+      console.log('Adding parent_id column to videos table...');
+      db.exec('ALTER TABLE videos ADD COLUMN parent_id INTEGER REFERENCES videos(id)');
+    }
+  }
+  
   // Create keyframes table
   db.exec(`
     CREATE TABLE IF NOT EXISTS keyframes (
