@@ -83,9 +83,72 @@ app.get('/api/videos', authenticateToken, (req, res) => {
       ORDER BY created_at DESC
     `).all(userId);
     
+    // Add file extension info to each video
+    videos.forEach(video => {
+      if (video.filename && video.filename !== 'pending') {
+        const extMatch = video.filename.match(/\.([^.]+)$/);
+        video.extension = extMatch ? extMatch[1] : 'unknown';
+      } else {
+        video.extension = 'unknown';
+      }
+    });
+    
     res.json({ videos });
   } catch (error) {
     console.error('Error fetching videos:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Convert video to MP4
+app.post('/api/convert-video', authenticateToken, (req, res) => {
+  const { videoId, socketId } = req.body;
+  const userId = req.user.id;
+  
+  if (!videoId) {
+    return res.status(400).json({ message: 'Video ID is required' });
+  }
+  
+  // Get video info from database
+  try {
+    const video = db.prepare(`
+      SELECT * FROM videos 
+      WHERE id = ? AND user_id = ?
+    `).get(videoId, userId);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+    
+    if (video.status !== 'completed') {
+      return res.status(400).json({ message: 'Video is not ready for conversion' });
+    }
+    
+    const convertId = uuidv4();
+    const outputFilename = `${convertId}.mp4`;
+    const outputPath = path.join(videosDir, outputFilename);
+    
+    // Create conversion entry in database
+    db.prepare(`
+      INSERT INTO videos 
+      (user_id, title, original_url, status, filename, file_path, download_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      userId, 
+      `${video.title} (MP4)`, 
+      video.original_url, 
+      'converting', 
+      outputFilename, 
+      outputPath, 
+      convertId
+    );
+    
+    res.json({ message: 'Conversion started', convertId });
+    
+    // Start the conversion process
+    convertVideoToMp4(video.file_path, outputPath, convertId, socketId);
+  } catch (error) {
+    console.error('Error starting conversion:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -256,6 +319,123 @@ function downloadYouTubeVideo(url, downloadId, socketId, userId) {
       });
     });
   });
+}
+
+// Function to convert video to MP4 using FFmpeg
+function convertVideoToMp4(inputPath, outputPath, convertId, socketId) {
+  const socket = socketId ? io.to(socketId) : io;
+  socket.emit('conversion_status', { 
+    id: convertId, 
+    status: 'started',
+    message: 'Conversion started...' 
+  });
+  
+  // Run FFmpeg for conversion
+  const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -c:a aac -strict experimental "${outputPath}" -y -progress pipe:1`;
+  
+  const conversionProcess = exec(ffmpegCmd, (error) => {
+    if (error) {
+      console.error(`Error converting video: ${error.message}`);
+      updateVideoStatus(convertId, 'error');
+      socket.emit('conversion_status', { 
+        id: convertId, 
+        status: 'error',
+        message: `Error converting video: ${error.message}` 
+      });
+      return;
+    }
+    
+    // Update file size
+    fs.stat(outputPath, (err, stats) => {
+      const fileSize = err ? 0 : stats.size;
+      
+      // Update video status to completed
+      db.prepare(`
+        UPDATE videos 
+        SET status = ?, file_size = ? 
+        WHERE download_id = ?
+      `).run('completed', fileSize, convertId);
+      
+      socket.emit('conversion_status', { 
+        id: convertId, 
+        status: 'completed',
+        message: 'Conversion complete!',
+        filename: path.basename(outputPath)
+      });
+    });
+  });
+  
+  // Parse FFmpeg progress
+  conversionProcess.stdout.on('data', (data) => {
+    const output = data.toString();
+    console.log(`FFmpeg stdout: ${output}`);
+    
+    // Extract progress info
+    let progress = {};
+    output.split('\n').forEach(line => {
+      const [key, value] = line.split('=');
+      if (key && value) {
+        progress[key.trim()] = value.trim();
+      }
+    });
+    
+    if (progress.out_time_ms && progress.total_size) {
+      // Calculate progress percentage if duration is available
+      let percent = 0;
+      
+      if (progress.duration) {
+        const totalMs = timeToMs(progress.duration);
+        const currentMs = parseInt(progress.out_time_ms, 10);
+        percent = Math.min(Math.round((currentMs / totalMs) * 100), 100);
+      }
+      
+      const formattedTime = formatTime(progress.out_time);
+      const message = `Converting: ${formattedTime} / ${progress.duration || 'unknown'} (${percent}%)`;
+      
+      socket.emit('conversion_progress', { 
+        id: convertId, 
+        progress: percent,
+        message,
+        details: {
+          currentTime: formattedTime,
+          totalTime: progress.duration || 'unknown',
+          bitrate: progress.bitrate || 'unknown',
+          speed: progress.speed || '1x'
+        }
+      });
+    }
+  });
+  
+  conversionProcess.stderr.on('data', (data) => {
+    const output = data.toString();
+    console.log(`FFmpeg stderr: ${output}`);
+    
+    // Try to extract duration info from stderr
+    const durationMatch = output.match(/Duration: ([0-9:.]+)/);
+    if (durationMatch && durationMatch[1]) {
+      socket.emit('conversion_info', { 
+        id: convertId, 
+        duration: durationMatch[1]
+      });
+    }
+  });
+}
+
+// Helper function to format time
+function formatTime(timeStr) {
+  if (!timeStr) return '00:00:00';
+  return timeStr.split('.')[0]; // Remove microseconds
+}
+
+// Helper function to convert time string to milliseconds
+function timeToMs(timeStr) {
+  if (!timeStr) return 0;
+  
+  const parts = timeStr.split(':').map(parseFloat);
+  if (parts.length === 3) {
+    return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+  }
+  return 0;
 }
 
 // Helper function to update video status in database

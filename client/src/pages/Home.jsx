@@ -9,8 +9,17 @@ const Home = () => {
   const navigate = useNavigate();
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [currentDownload, setCurrentDownload] = useState(null);
+  const [currentConversion, setCurrentConversion] = useState(null);
   const [error, setError] = useState('');
-  const { connected, downloadStatus, downloadProgress, downloadYouTubeVideo } = useSocket();
+  const { 
+    connected, 
+    downloadStatus, 
+    downloadProgress, 
+    conversionStatus,
+    conversionProgress,
+    downloadYouTubeVideo,
+    convertVideoToMp4
+  } = useSocket();
   const { videos, loading, error: videosError, refreshVideos, formatBytes } = useVideos();
 
   const handleLogout = () => {
@@ -41,12 +50,25 @@ const Home = () => {
   const currentStatus = currentDownload ? downloadStatus[currentDownload] : null;
   const currentProgress = currentDownload ? downloadProgress[currentDownload] : null;
   
-  // Refresh video list when a download completes
+  // Get current conversion status and progress
+  const currentConversionStatus = currentConversion ? conversionStatus[currentConversion] : null;
+  const currentConversionProgress = currentConversion ? conversionProgress[currentConversion] : null;
+  
+  const handleConvertToMp4 = async (videoId) => {
+    try {
+      const result = await convertVideoToMp4(videoId);
+      setCurrentConversion(result.convertId);
+    } catch (err) {
+      setError(err.message || 'Failed to start conversion');
+    }
+  };
+  
+  // Refresh video list when a download or conversion completes
   useEffect(() => {
-    if (currentStatus?.status === 'completed') {
+    if (currentStatus?.status === 'completed' || currentConversionStatus?.status === 'completed') {
       refreshVideos();
     }
-  }, [currentStatus, refreshVideos]);
+  }, [currentStatus, currentConversionStatus, refreshVideos]);
 
   if (!isAuthenticated) {
     return (
@@ -216,6 +238,68 @@ const Home = () => {
                 </div>
               </div>
             )}
+            
+            {/* Conversion Status */}
+            {currentConversion && (
+              <div className="mt-6">
+                <h3 className="text-md font-medium text-gray-700 dark:text-gray-300 mb-2">Conversion Status</h3>
+                
+                <div className="bg-gray-100 dark:bg-slate-700 p-4 rounded-md">
+                  {currentConversionStatus?.status === 'started' && (
+                    <>
+                      <p className="text-gray-700 dark:text-gray-300">{currentConversionStatus.message}</p>
+                      {currentConversionProgress && (
+                        <div className="mt-2">
+                          <div className="h-2 bg-gray-300 dark:bg-gray-600 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-purple-600" 
+                              style={{ width: `${currentConversionProgress.progress || 0}%` }}
+                            ></div>
+                          </div>
+                          
+                          <div className="text-sm mt-2">
+                            <p className="text-gray-700 dark:text-gray-300">
+                              {currentConversionProgress.message || 'Preparing conversion...'}
+                            </p>
+                            
+                            {currentConversionProgress.details && (
+                              <div className="grid grid-cols-3 gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                {currentConversionProgress.details.currentTime && (
+                                  <div>
+                                    <span className="font-medium">Time:</span> {currentConversionProgress.details.currentTime}
+                                  </div>
+                                )}
+                                {currentConversionProgress.details.totalTime && (
+                                  <div>
+                                    <span className="font-medium">Duration:</span> {currentConversionProgress.details.totalTime}
+                                  </div>
+                                )}
+                                {currentConversionProgress.details.speed && (
+                                  <div>
+                                    <span className="font-medium">Speed:</span> {currentConversionProgress.details.speed}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  
+                  {currentConversionStatus?.status === 'completed' && (
+                    <div className="text-green-600 dark:text-green-400">
+                      <p>{currentConversionStatus.message}</p>
+                      <p className="text-sm mt-1">File saved as: {currentConversionStatus.filename}</p>
+                    </div>
+                  )}
+                  
+                  {currentConversionStatus?.status === 'error' && (
+                    <p className="text-red-600 dark:text-red-400">{currentConversionStatus.message}</p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
         
@@ -259,6 +343,9 @@ const Home = () => {
                         Title
                       </th>
                       <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                        Format
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                         Status
                       </th>
                       <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
@@ -266,6 +353,9 @@ const Home = () => {
                       </th>
                       <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                         Date
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                        Actions
                       </th>
                     </tr>
                   </thead>
@@ -281,9 +371,15 @@ const Home = () => {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                            {video.extension || 'unknown'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
                             ${video.status === 'completed' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 
                               video.status === 'error' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' : 
+                              video.status === 'converting' ? 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200' :
                               'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'}`}>
                             {video.status}
                           </span>
@@ -293,6 +389,16 @@ const Home = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           {new Date(video.created_at).toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                          {video.status === 'completed' && video.extension !== 'mp4' && (
+                            <button
+                              onClick={() => handleConvertToMp4(video.id)}
+                              className="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300"
+                            >
+                              Convert to MP4
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}

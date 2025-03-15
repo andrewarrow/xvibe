@@ -7,6 +7,8 @@ const useSocket = () => {
   const [connected, setConnected] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState({});
   const [downloadProgress, setDownloadProgress] = useState({});
+  const [conversionStatus, setConversionStatus] = useState({});
+  const [conversionProgress, setConversionProgress] = useState({});
   const { token, isAuthenticated } = useAuth();
 
   useEffect(() => {
@@ -42,6 +44,38 @@ const useSocket = () => {
           progress: data.progress,
           message: data.message,
           details: data.details
+        }
+      }));
+    });
+    
+    socketInstance.on('conversion_status', (data) => {
+      setConversionStatus(prev => ({
+        ...prev,
+        [data.id]: {
+          status: data.status,
+          message: data.message,
+          filename: data.filename
+        }
+      }));
+    });
+    
+    socketInstance.on('conversion_progress', (data) => {
+      setConversionProgress(prev => ({
+        ...prev,
+        [data.id]: {
+          progress: data.progress,
+          message: data.message,
+          details: data.details
+        }
+      }));
+    });
+    
+    socketInstance.on('conversion_info', (data) => {
+      setConversionProgress(prev => ({
+        ...prev,
+        [data.id]: {
+          ...(prev[data.id] || {}),
+          duration: data.duration
         }
       }));
     });
@@ -86,12 +120,47 @@ const useSocket = () => {
     }
   }, [socket, connected, token, isAuthenticated]);
   
+  const convertVideoToMp4 = useCallback(async (videoId) => {
+    if (!socket || !connected) {
+      throw new Error('Socket not connected');
+    }
+    
+    if (!isAuthenticated || !token) {
+      throw new Error('Authentication required');
+    }
+    
+    try {
+      const response = await fetch('http://localhost:5000/api/convert-video', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ videoId, socketId: socket.id }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to start conversion');
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error starting conversion:', error);
+      throw error;
+    }
+  }, [socket, connected, token, isAuthenticated]);
+  
   return {
     socket,
     connected,
     downloadStatus,
     downloadProgress,
-    downloadYouTubeVideo
+    conversionStatus,
+    conversionProgress,
+    downloadYouTubeVideo,
+    convertVideoToMp4
   };
 };
 
