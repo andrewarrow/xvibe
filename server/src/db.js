@@ -31,10 +31,24 @@ export const initializeDatabase = () => {
       original_url TEXT NOT NULL,
       status TEXT NOT NULL,
       file_path TEXT NOT NULL,
+      directory_path TEXT NOT NULL,
       file_size INTEGER,
       download_id TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+  
+  // Create keyframes table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS keyframes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      timestamp TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (video_id) REFERENCES videos(id)
     )
   `);
 

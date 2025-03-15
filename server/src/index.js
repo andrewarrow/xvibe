@@ -35,6 +35,9 @@ if (!fs.existsSync(videosDir)) {
   fs.mkdirSync(videosDir, { recursive: true });
 }
 
+// Serve static files from videos directory
+app.use('/videos', authenticateToken, express.static(videosDir));
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -60,11 +63,18 @@ app.post('/api/download-video', authenticateToken, (req, res) => {
   const downloadId = uuidv4();
   
   // Create video entry in database with initial status
+  const videoDir = path.join(videosDir, downloadId);
+  
+  // Create a directory for this video
+  if (!fs.existsSync(videoDir)) {
+    fs.mkdirSync(videoDir, { recursive: true });
+  }
+  
   db.prepare(`
     INSERT INTO videos 
-    (user_id, original_url, status, filename, file_path, download_id) 
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(userId, url, 'started', 'pending', 'pending', downloadId);
+    (user_id, original_url, status, filename, file_path, directory_path, download_id) 
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(userId, url, 'started', 'pending', 'pending', videoDir, downloadId);
   
   res.json({ message: 'Download started', downloadId });
   
@@ -100,6 +110,105 @@ app.get('/api/videos', authenticateToken, (req, res) => {
   }
 });
 
+// Get single video details
+app.get('/api/videos/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  
+  try {
+    // Get video details
+    const video = db.prepare(`
+      SELECT * FROM videos 
+      WHERE id = ? AND user_id = ?
+    `).get(id, userId);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+    
+    // Get keyframes for this video
+    const keyframes = db.prepare(`
+      SELECT * FROM keyframes 
+      WHERE video_id = ? 
+      ORDER BY filename
+    `).all(id);
+    
+    // Get other versions of this video (based on directory path)
+    const versions = db.prepare(`
+      SELECT * FROM videos 
+      WHERE directory_path = ? AND id != ? 
+      ORDER BY created_at DESC
+    `).all(video.directory_path, id);
+    
+    // Add extension info
+    if (video.filename && video.filename !== 'pending') {
+      const extMatch = video.filename.match(/\.([^.]+)$/);
+      video.extension = extMatch ? extMatch[1] : 'unknown';
+    } else {
+      video.extension = 'unknown';
+    }
+    
+    // Format keyframes for client
+    const formattedKeyframes = keyframes.map(keyframe => ({
+      ...keyframe,
+      url: `/videos/${path.basename(video.directory_path)}/keyframes/${keyframe.filename}`
+    }));
+    
+    // Format versions
+    const formattedVersions = versions.map(version => {
+      const extMatch = version.filename.match(/\.([^.]+)$/);
+      return {
+        ...version,
+        extension: extMatch ? extMatch[1] : 'unknown',
+        url: `/videos/${path.basename(version.directory_path)}/${version.filename}`
+      };
+    });
+    
+    // Add video URL
+    video.url = `/videos/${path.basename(video.directory_path)}/${video.filename}`;
+    
+    res.json({ 
+      video, 
+      keyframes: formattedKeyframes,
+      versions: formattedVersions
+    });
+  } catch (error) {
+    console.error('Error fetching video details:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Extract keyframes from video
+app.post('/api/videos/:id/keyframes', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { socketId } = req.body;
+  const userId = req.user.id;
+  
+  try {
+    // Get video details
+    const video = db.prepare(`
+      SELECT * FROM videos 
+      WHERE id = ? AND user_id = ?
+    `).get(id, userId);
+    
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+    
+    if (video.status !== 'completed') {
+      return res.status(400).json({ message: 'Video is not ready for keyframe extraction' });
+    }
+    
+    res.json({ message: 'Keyframe extraction started' });
+    
+    // Start keyframe extraction process
+    extractKeyframes(video.file_path, video.directory_path, video.id, socketId);
+  } catch (error) {
+    console.error('Error starting keyframe extraction:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Convert video to MP4
 app.post('/api/convert-video', authenticateToken, (req, res) => {
   const { videoId, socketId } = req.body;
@@ -125,14 +234,14 @@ app.post('/api/convert-video', authenticateToken, (req, res) => {
     }
     
     const convertId = uuidv4();
-    const outputFilename = `${convertId}.mp4`;
-    const outputPath = path.join(videosDir, outputFilename);
+    const outputFilename = `converted.mp4`;
+    const outputPath = path.join(video.directory_path, outputFilename);
     
     // Create conversion entry in database
     db.prepare(`
       INSERT INTO videos 
-      (user_id, title, original_url, status, filename, file_path, download_id) 
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (user_id, title, original_url, status, filename, file_path, directory_path, download_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       userId, 
       `${video.title} (MP4)`, 
@@ -140,6 +249,7 @@ app.post('/api/convert-video', authenticateToken, (req, res) => {
       'converting', 
       outputFilename, 
       outputPath, 
+      video.directory_path,
       convertId
     );
     
@@ -175,6 +285,12 @@ function downloadYouTubeVideo(url, downloadId, socketId, userId) {
     status: 'started',
     message: 'Download started...' 
   });
+  
+  // Create a directory for this video
+  const videoDir = path.join(videosDir, downloadId);
+  if (!fs.existsSync(videoDir)) {
+    fs.mkdirSync(videoDir, { recursive: true });
+  }
   
   // Use yt-dlp to get video info first
   exec(`yt-dlp --print "%(title)s" ${url}`, (error, titleStdout) => {
@@ -212,15 +328,15 @@ function downloadYouTubeVideo(url, downloadId, socketId, userId) {
       }
       
       const extension = stdout.trim();
-      const outputFilename = `${downloadId}.${extension}`;
-      const outputPath = path.join(videosDir, outputFilename);
+      const outputFilename = `original.${extension}`;
+      const outputPath = path.join(videoDir, outputFilename);
       
       // Update filename and path in database
       db.prepare(`
         UPDATE videos 
-        SET filename = ?, file_path = ? 
+        SET filename = ?, file_path = ?, directory_path = ? 
         WHERE download_id = ?
-      `).run(outputFilename, outputPath, downloadId);
+      `).run(outputFilename, outputPath, videoDir, downloadId);
       
       // Download the video
       const downloadProcess = exec(`yt-dlp -o "${outputPath}" ${url}`, (error) => {
@@ -251,7 +367,8 @@ function downloadYouTubeVideo(url, downloadId, socketId, userId) {
             status: 'completed',
             message: 'Download complete!',
             filename: outputFilename,
-            title: videoTitle
+            title: videoTitle,
+            videoDir: downloadId // Send directory ID to client
           });
         });
       });
@@ -416,6 +533,97 @@ function convertVideoToMp4(inputPath, outputPath, convertId, socketId) {
       socket.emit('conversion_info', { 
         id: convertId, 
         duration: durationMatch[1]
+      });
+    }
+  });
+}
+
+// Function to extract keyframes from video
+function extractKeyframes(videoPath, outputDir, videoId, socketId) {
+  const socket = socketId ? io.to(socketId) : io;
+  socket.emit('keyframe_status', { 
+    id: videoId, 
+    status: 'started',
+    message: 'Keyframe extraction started...' 
+  });
+  
+  // Create keyframes directory if it doesn't exist
+  const keyframesDir = path.join(outputDir, 'keyframes');
+  if (!fs.existsSync(keyframesDir)) {
+    fs.mkdirSync(keyframesDir, { recursive: true });
+  }
+  
+  // Use FFmpeg to extract keyframes (I-frames)
+  const ffmpegCmd = `ffmpeg -i "${videoPath}" -vf "select=eq(pict_type\\,I)" -vsync vfr "${keyframesDir}/keyframe-%04d.jpg" -y`;
+  
+  const extractionProcess = exec(ffmpegCmd, (error) => {
+    if (error) {
+      console.error(`Error extracting keyframes: ${error.message}`);
+      socket.emit('keyframe_status', { 
+        id: videoId, 
+        status: 'error',
+        message: `Error extracting keyframes: ${error.message}` 
+      });
+      return;
+    }
+    
+    // Get all keyframes
+    fs.readdir(keyframesDir, (err, files) => {
+      if (err) {
+        console.error(`Error reading keyframes directory: ${err.message}`);
+        socket.emit('keyframe_status', { 
+          id: videoId, 
+          status: 'error',
+          message: `Error reading keyframes: ${err.message}` 
+        });
+        return;
+      }
+      
+      // Filter only jpg files
+      const keyframeFiles = files.filter(file => file.endsWith('.jpg'));
+      
+      // Insert keyframes into database
+      keyframeFiles.forEach(filename => {
+        const filePath = path.join(keyframesDir, filename);
+        
+        try {
+          // Extract frame number from filename (keyframe-0001.jpg -> 1)
+          const frameMatch = filename.match(/keyframe-(\d+)\.jpg/);
+          const frameNumber = frameMatch ? parseInt(frameMatch[1], 10) : 0;
+          
+          db.prepare(`
+            INSERT INTO keyframes 
+            (video_id, filename, file_path) 
+            VALUES (?, ?, ?)
+          `).run(videoId, filename, filePath);
+        } catch (error) {
+          console.error(`Error saving keyframe to database: ${error.message}`);
+        }
+      });
+      
+      socket.emit('keyframe_status', { 
+        id: videoId, 
+        status: 'completed',
+        message: 'Keyframe extraction complete!',
+        keyframeCount: keyframeFiles.length,
+        keyframes: keyframeFiles.map(file => `/videos/${path.basename(outputDir)}/keyframes/${file}`)
+      });
+    });
+  });
+  
+  // Monitor progress
+  extractionProcess.stderr.on('data', (data) => {
+    const output = data.toString();
+    console.log(`Keyframe extraction stderr: ${output}`);
+    
+    // Try to parse progress
+    const frameMatch = output.match(/frame=\s*(\d+)/);
+    if (frameMatch && frameMatch[1]) {
+      const frame = parseInt(frameMatch[1], 10);
+      socket.emit('keyframe_progress', { 
+        id: videoId, 
+        frame,
+        message: `Processed frame: ${frame}`
       });
     }
   });

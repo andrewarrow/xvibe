@@ -3,8 +3,11 @@ import { useAuth } from './useAuth';
 
 const useVideos = () => {
   const [videos, setVideos] = useState([]);
+  const [videoDetails, setVideoDetails] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [detailsError, setDetailsError] = useState(null);
   const { isAuthenticated, token } = useAuth();
 
   const fetchVideos = useCallback(async () => {
@@ -36,6 +39,37 @@ const useVideos = () => {
     }
   }, [isAuthenticated, token]);
 
+  const fetchVideoDetails = useCallback(async (videoId) => {
+    if (!isAuthenticated || !token || !videoId) {
+      return;
+    }
+
+    setDetailsLoading(true);
+    setDetailsError(null);
+
+    try {
+      const response = await fetch(`http://localhost:5000/api/videos/${videoId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch video details');
+      }
+
+      const data = await response.json();
+      setVideoDetails(data);
+      return data;
+    } catch (err) {
+      console.error('Error fetching video details:', err);
+      setDetailsError(err.message || 'Failed to load video details');
+      return null;
+    } finally {
+      setDetailsLoading(false);
+    }
+  }, [isAuthenticated, token]);
+
   useEffect(() => {
     if (isAuthenticated) {
       fetchVideos();
@@ -56,11 +90,21 @@ const useVideos = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   };
 
+  // Clear video details (useful when navigating away from details page)
+  const clearVideoDetails = useCallback(() => {
+    setVideoDetails(null);
+  }, []);
+
   return {
     videos,
+    videoDetails,
     loading,
+    detailsLoading,
     error,
+    detailsError,
     refreshVideos: fetchVideos,
+    fetchVideoDetails,
+    clearVideoDetails,
     formatBytes
   };
 };

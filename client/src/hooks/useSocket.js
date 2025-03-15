@@ -9,6 +9,8 @@ const useSocket = () => {
   const [downloadProgress, setDownloadProgress] = useState({});
   const [conversionStatus, setConversionStatus] = useState({});
   const [conversionProgress, setConversionProgress] = useState({});
+  const [keyframeStatus, setKeyframeStatus] = useState({});
+  const [keyframeProgress, setKeyframeProgress] = useState({});
   const { token, isAuthenticated } = useAuth();
 
   useEffect(() => {
@@ -32,7 +34,8 @@ const useSocket = () => {
           status: data.status,
           message: data.message,
           filename: data.filename,
-          title: data.title
+          title: data.title,
+          videoDir: data.videoDir
         }
       }));
     });
@@ -76,6 +79,28 @@ const useSocket = () => {
         [data.id]: {
           ...(prev[data.id] || {}),
           duration: data.duration
+        }
+      }));
+    });
+    
+    socketInstance.on('keyframe_status', (data) => {
+      setKeyframeStatus(prev => ({
+        ...prev,
+        [data.id]: {
+          status: data.status,
+          message: data.message,
+          keyframeCount: data.keyframeCount,
+          keyframes: data.keyframes
+        }
+      }));
+    });
+    
+    socketInstance.on('keyframe_progress', (data) => {
+      setKeyframeProgress(prev => ({
+        ...prev,
+        [data.id]: {
+          frame: data.frame,
+          message: data.message
         }
       }));
     });
@@ -152,6 +177,38 @@ const useSocket = () => {
     }
   }, [socket, connected, token, isAuthenticated]);
   
+  const extractKeyframes = useCallback(async (videoId) => {
+    if (!socket || !connected) {
+      throw new Error('Socket not connected');
+    }
+    
+    if (!isAuthenticated || !token) {
+      throw new Error('Authentication required');
+    }
+    
+    try {
+      const response = await fetch(`http://localhost:5000/api/videos/${videoId}/keyframes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ socketId: socket.id }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to start keyframe extraction');
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error starting keyframe extraction:', error);
+      throw error;
+    }
+  }, [socket, connected, token, isAuthenticated]);
+  
   return {
     socket,
     connected,
@@ -159,8 +216,11 @@ const useSocket = () => {
     downloadProgress,
     conversionStatus,
     conversionProgress,
+    keyframeStatus,
+    keyframeProgress,
     downloadYouTubeVideo,
-    convertVideoToMp4
+    convertVideoToMp4,
+    extractKeyframes
   };
 };
 

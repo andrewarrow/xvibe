@@ -341,7 +341,11 @@ const Home = () => {
                   </thead>
                   <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">
                     {videos.map((video) => (
-                      <tr key={video.id} className="hover:bg-gray-50 dark:hover:bg-slate-700">
+                      <tr 
+                        key={video.id} 
+                        className="hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer"
+                        onClick={() => navigate(`/videos/${video.id}`)}
+                      >
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm font-medium text-gray-900 dark:text-white">
                             {video.title || 'Unknown Title'}
@@ -370,7 +374,7 @@ const Home = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           {new Date(video.created_at).toLocaleString()}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium" onClick={(e) => e.stopPropagation()}>
                           {video.status === 'completed' && video.extension !== 'mp4' && (
                             <button
                               onClick={() => handleConvertToMp4(video.id)}

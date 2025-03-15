@@ -4,6 +4,7 @@ import Home from './pages/Home';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
+import VideoDetail from './pages/VideoDetail';
 import { useAuth } from './hooks/useAuth';
 
 // Protected route component
@@ -28,6 +29,11 @@ function App() {
           <Route path="/dashboard" element={
             <ProtectedRoute>
               <Dashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/videos/:videoId" element={
+            <ProtectedRoute>
+              <VideoDetail />
             </ProtectedRoute>
           } />
         </Routes>
