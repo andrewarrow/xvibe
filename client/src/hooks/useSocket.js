@@ -1,11 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { io } from 'socket.io-client';
+import { useAuth } from './useAuth';
 
 const useSocket = () => {
   const [socket, setSocket] = useState(null);
   const [connected, setConnected] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState({});
   const [downloadProgress, setDownloadProgress] = useState({});
+  const { token, isAuthenticated } = useAuth();
 
   useEffect(() => {
     // Initialize socket
@@ -27,7 +29,8 @@ const useSocket = () => {
         [data.id]: {
           status: data.status,
           message: data.message,
-          filename: data.filename
+          filename: data.filename,
+          title: data.title
         }
       }));
     });
@@ -37,7 +40,8 @@ const useSocket = () => {
         ...prev,
         [data.id]: {
           progress: data.progress,
-          message: data.message
+          message: data.message,
+          details: data.details
         }
       }));
     });
@@ -55,14 +59,24 @@ const useSocket = () => {
       throw new Error('Socket not connected');
     }
     
+    if (!isAuthenticated || !token) {
+      throw new Error('Authentication required');
+    }
+    
     try {
       const response = await fetch('http://localhost:5000/api/download-video', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ url, socketId: socket.id }),
       });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to start download');
+      }
       
       const data = await response.json();
       return data;
@@ -70,7 +84,7 @@ const useSocket = () => {
       console.error('Error starting download:', error);
       throw error;
     }
-  }, [socket, connected]);
+  }, [socket, connected, token, isAuthenticated]);
   
   return {
     socket,

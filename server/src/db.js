@@ -6,17 +6,35 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dbPath = path.join(__dirname, '../db/database.sqlite');
+const dbPath = path.join(__dirname, '../database.sqlite');
 const db = new Database(dbPath);
 
 // Initialize database with tables
 export const initializeDatabase = () => {
+  // Create users table
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  
+  // Create videos table (migration 1)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS videos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      title TEXT,
+      filename TEXT NOT NULL,
+      original_url TEXT NOT NULL,
+      status TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_size INTEGER,
+      download_id TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
 
