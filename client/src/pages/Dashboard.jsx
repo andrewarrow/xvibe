@@ -71,18 +71,25 @@ const Dashboard = () => {
   };
 
   const getImages = () => {
-    if (!tweetData) return [];
+    if (!tweetData || !tweetData.media) return [];
     
-    return tweetData.media.map(media => ({
-      media_key: media.media_key,
-      url: media.url,
-      type: media.type,
-      width: media.width,
-      height: media.height,
+    return tweetData.media.map(media => {
       // Find the tweet that contains this media
-      tweet: tweetData.data.find(tweet => 
-        tweet.attachments?.media_keys?.includes(media.media_key))
-    }));
+      const associatedTweet = tweetData.data?.find(tweet => 
+        tweet.attachments?.media_keys?.includes(media.media_key));
+      
+      return {
+        media_key: media.media_key,
+        url: media.url,
+        type: media.type,
+        width: media.width,
+        height: media.height,
+        tweet: associatedTweet || { 
+          text: "No associated tweet found",
+          id: `no-tweet-${media.media_key}`
+        }
+      };
+    });
   };
 
   const getEntities = () => {
@@ -259,25 +266,45 @@ const Dashboard = () => {
   const renderMediaTab = () => {
     const images = getImages();
     
+    if (!images || images.length === 0) {
+      return (
+        <div className="bg-white dark:bg-slate-800 rounded-lg p-6 text-center">
+          <p className="text-gray-700 dark:text-gray-300">No media content available.</p>
+        </div>
+      );
+    }
+    
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {images.map(image => (
-          <div key={image.media_key} className="bg-white dark:bg-slate-800 rounded-lg overflow-hidden shadow">
-            <img 
-              src={image.url} 
-              alt="Media content" 
-              className="w-full h-48 object-cover"
-            />
+          <div key={image.media_key || `image-${Math.random()}`} className="bg-white dark:bg-slate-800 rounded-lg overflow-hidden shadow">
+            {image.url ? (
+              <img 
+                src={image.url} 
+                alt="Media content" 
+                className="w-full h-48 object-cover"
+                onError={(e) => {
+                  e.target.onerror = null;
+                  e.target.src = "https://via.placeholder.com/400x300?text=Image+Not+Available";
+                }}
+              />
+            ) : (
+              <div className="w-full h-48 bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                <span className="text-gray-500 dark:text-gray-400">Image not available</span>
+              </div>
+            )}
             <div className="p-4">
               <p className="text-sm text-gray-800 dark:text-gray-200">
-                {image.tweet?.text.substring(0, 100)}{image.tweet?.text.length > 100 ? '...' : ''}
+                {image.tweet?.text ? 
+                  `${image.tweet.text.substring(0, 100)}${image.tweet.text.length > 100 ? '...' : ''}` : 
+                  'No tweet text available'}
               </p>
               <div className="mt-2 flex items-center justify-between">
                 <span className="text-xs text-gray-500 dark:text-gray-400">
-                  {image.width}x{image.height}
+                  {image.width && image.height ? `${image.width}x${image.height}` : 'Dimensions unknown'}
                 </span>
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                  {image.type}
+                  {image.type || 'unknown'}
                 </span>
               </div>
             </div>
@@ -467,7 +494,7 @@ const Dashboard = () => {
             <div className="mt-4">
               {activeTab === 'tweets' && renderTweetsTable()}
               {activeTab === 'engagement' && renderEngagementTab()}
-              {activeTab === 'media' && renderMediaTab()}
+              {activeTab === 'media' && tweetData?.media && renderMediaTab()}
               {activeTab === 'entities' && renderEntitiesTab()}
               {activeTab === 'languages' && renderLanguagesTab()}
             </div>

@@ -1,15 +1,43 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
+import useSocket from '../hooks/useSocket';
 
 const Home = () => {
   const { isAuthenticated, user, logout } = useAuth();
   const navigate = useNavigate();
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [currentDownload, setCurrentDownload] = useState(null);
+  const [error, setError] = useState('');
+  const { connected, downloadStatus, downloadProgress, downloadYouTubeVideo } = useSocket();
 
   const handleLogout = () => {
     logout();
     navigate('/');
   };
+
+  const handleDownload = async (e) => {
+    e.preventDefault();
+    setError('');
+    
+    // Basic validation
+    if (!youtubeUrl) {
+      setError('Please enter a YouTube URL');
+      return;
+    }
+    
+    try {
+      const result = await downloadYouTubeVideo(youtubeUrl);
+      setCurrentDownload(result.downloadId);
+      setYoutubeUrl('');
+    } catch (err) {
+      setError(err.message || 'Failed to start download');
+    }
+  };
+
+  // Get current download status and progress
+  const currentStatus = currentDownload ? downloadStatus[currentDownload] : null;
+  const currentProgress = currentDownload ? downloadProgress[currentDownload] : null;
 
   if (!isAuthenticated) {
     return (
@@ -57,7 +85,7 @@ const Home = () => {
         </div>
       </header>
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white dark:bg-slate-800 overflow-hidden shadow rounded-lg">
+        <div className="bg-white dark:bg-slate-800 overflow-hidden shadow rounded-lg mb-6">
           <div className="px-4 py-5 sm:p-6">
             <h2 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Welcome to XVibe</h2>
             <p className="text-gray-600 dark:text-gray-300 mb-6">
@@ -75,6 +103,84 @@ const Home = () => {
                 View Dashboard
               </button>
             </div>
+          </div>
+        </div>
+        
+        {/* YouTube Downloader */}
+        <div className="bg-white dark:bg-slate-800 overflow-hidden shadow rounded-lg">
+          <div className="px-4 py-5 sm:p-6">
+            <h2 className="text-lg font-medium text-gray-900 dark:text-white mb-4">YouTube Video Downloader</h2>
+            
+            <form onSubmit={handleDownload} className="space-y-4">
+              <div>
+                <label htmlFor="youtube-url" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  YouTube URL
+                </label>
+                <div className="mt-1">
+                  <input
+                    type="text"
+                    id="youtube-url"
+                    value={youtubeUrl}
+                    onChange={(e) => setYoutubeUrl(e.target.value)}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 dark:border-gray-600 dark:bg-slate-700 dark:text-white rounded-md p-2"
+                  />
+                </div>
+              </div>
+              
+              {error && (
+                <p className="text-red-600 text-sm mt-1">{error}</p>
+              )}
+              
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={!connected || currentStatus?.status === 'started'}
+                  className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white ${connected ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-400'} focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500`}
+                >
+                  {!connected ? 'Connecting...' : 'Download Video'}
+                </button>
+              </div>
+            </form>
+            
+            {/* Download Status */}
+            {currentDownload && (
+              <div className="mt-6">
+                <h3 className="text-md font-medium text-gray-700 dark:text-gray-300 mb-2">Download Status</h3>
+                
+                <div className="bg-gray-100 dark:bg-slate-700 p-4 rounded-md">
+                  {currentStatus?.status === 'started' && (
+                    <>
+                      <p className="text-gray-700 dark:text-gray-300">{currentStatus.message}</p>
+                      {currentProgress && (
+                        <div className="mt-2">
+                          <div className="h-2 bg-gray-300 dark:bg-gray-600 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-blue-600" 
+                              style={{ width: `${currentProgress.progress}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                            {currentProgress.message}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  
+                  {currentStatus?.status === 'completed' && (
+                    <div className="text-green-600 dark:text-green-400">
+                      <p>{currentStatus.message}</p>
+                      <p className="text-sm mt-1">File saved as: {currentStatus.filename}</p>
+                    </div>
+                  )}
+                  
+                  {currentStatus?.status === 'error' && (
+                    <p className="text-red-600 dark:text-red-400">{currentStatus.message}</p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </main>
