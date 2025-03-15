@@ -1,6 +1,7 @@
 # XVibe
 
 A simple web application with a React frontend and Node.js backend using SQLite database.
+This was made with claude code and these prompts:
 
 ```
 {
