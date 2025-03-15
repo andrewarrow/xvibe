@@ -154,7 +154,16 @@ const VideoDetail = () => {
         } 
         // Text line
         else if (line && !line.match(/^[0-9]+$/)) {  // Skip numeric ID lines
-          currentText.push(line);
+          // Clean up timestamp artifacts and HTML-like tags in the text
+          // This handles: <00:20:09.480>, <00:20:09.480><c>, closing tags </c>, and other HTML-like tags
+          const cleanedLine = line
+            .replace(/<[0-9:.]+>(<[a-z]>)?/g, '')  // Remove timestamp markers with optional tag
+            .replace(/<\/[a-z]>/g, '')             // Remove closing tags like </c>
+            .replace(/<[a-z]>/g, '')               // Remove opening tags like <c>
+            .trim();
+          if (cleanedLine) {
+            currentText.push(cleanedLine);
+          }
         } 
         // Empty line - end of a cue
         else if (line === '' && currentTime && currentText.length > 0) {
