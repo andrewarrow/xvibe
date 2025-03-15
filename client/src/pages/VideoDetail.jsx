@@ -23,6 +23,9 @@ const VideoDetail = () => {
   
   const [captionLoading, setCaptionLoading] = useState(false);
   const [captionError, setCaptionError] = useState('');
+  const [parseCaptionsLoading, setParseCaptionsLoading] = useState(false);
+  const [parseCaptionsError, setParseCaptionsError] = useState('');
+  const [captionData, setCaptionData] = useState({});
   
   const {
     connected,
@@ -93,6 +96,129 @@ const VideoDetail = () => {
     } finally {
       setCaptionLoading(false);
     }
+  };
+
+  const handleParseCaptions = async () => {
+    if (!video.captions_path) {
+      setParseCaptionsError('No captions available. Please download captions first.');
+      return;
+    }
+
+    setParseCaptionsError('');
+    setParseCaptionsLoading(true);
+    
+    try {
+      // Fetch the captions file
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/captions/${path.basename(video.directory_path)}`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch captions file');
+      }
+      
+      const vttText = await response.text();
+      console.log('Captions file fetched, parsing...');
+      
+      // Parse the WebVTT file
+      const captionsMap = {};
+      
+      // Split by line breaks and process
+      const lines = vttText.split('\n');
+      let currentTime = null;
+      let currentText = [];
+      
+      // Skip WebVTT header
+      let i = 0;
+      while (i < lines.length && !lines[i].includes('-->')) {
+        i++;
+      }
+      
+      // Process cues
+      for (; i < lines.length; i++) {
+        const line = lines[i].trim();
+        
+        // Time code line
+        if (line.includes('-->')) {
+          // If we have previous cue data, save it
+          if (currentTime && currentText.length > 0) {
+            captionsMap[currentTime] = currentText.join(' ');
+            currentText = [];
+          }
+          
+          // Parse the timestamp
+          const match = line.match(/([0-9:.]+)\s+-->\s+([0-9:.]+)/);
+          if (match) {
+            const startTime = match[1];
+            currentTime = convertVttTimeToSeconds(startTime);
+          }
+        } 
+        // Text line
+        else if (line && !line.match(/^[0-9]+$/)) {  // Skip numeric ID lines
+          currentText.push(line);
+        } 
+        // Empty line - end of a cue
+        else if (line === '' && currentTime && currentText.length > 0) {
+          captionsMap[currentTime] = currentText.join(' ');
+          currentText = [];
+          currentTime = null;
+        }
+      }
+      
+      // Save the last cue if any
+      if (currentTime && currentText.length > 0) {
+        captionsMap[currentTime] = currentText.join(' ');
+      }
+      
+      console.log('Parsed captions:', Object.keys(captionsMap).length, 'cues');
+      setCaptionData(captionsMap);
+      
+    } catch (err) {
+      console.error('Error parsing captions:', err);
+      setParseCaptionsError(err.message || 'Failed to parse captions');
+    } finally {
+      setParseCaptionsLoading(false);
+    }
+  };
+  
+  // Helper to convert VTT timestamp to seconds
+  const convertVttTimeToSeconds = (timeString) => {
+    const parts = timeString.split(':');
+    let seconds = 0;
+    
+    if (parts.length === 3) {
+      // Format: HH:MM:SS.mmm
+      const [hours, minutes, secondsPart] = parts;
+      seconds = parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseFloat(secondsPart);
+    } else if (parts.length === 2) {
+      // Format: MM:SS.mmm
+      const [minutes, secondsPart] = parts;
+      seconds = parseInt(minutes) * 60 + parseFloat(secondsPart);
+    }
+    
+    return seconds;
+  };
+  
+  // Find the closest caption for a keyframe
+  const findCaptionForKeyframe = (keyframeIndex, totalKeyframes) => {
+    if (!captionData || Object.keys(captionData).length === 0) {
+      return null;
+    }
+    
+    // Estimate video duration based on keyframe count (rough approximation)
+    const estimatedDuration = Object.keys(captionData)
+      .map(time => parseFloat(time))
+      .reduce((max, time) => Math.max(max, time), 0);
+    
+    // Estimate timestamp for this keyframe
+    const estimatedTime = (keyframeIndex / totalKeyframes) * estimatedDuration;
+    
+    // Find the closest caption time
+    const captionTimes = Object.keys(captionData).map(t => parseFloat(t));
+    const closestTime = captionTimes.reduce((prev, curr) => {
+      return (Math.abs(curr - estimatedTime) < Math.abs(prev - estimatedTime)) ? curr : prev;
+    }, captionTimes[0]);
+    
+    return captionData[closestTime];
   };
   
   const goBack = () => {
@@ -273,6 +399,29 @@ const VideoDetail = () => {
                           Download File
                         </a>
                       </div>
+                      
+                      {/* Parse Captions Button */}
+                      <button
+                        onClick={handleParseCaptions}
+                        disabled={parseCaptionsLoading}
+                        className={`mt-3 w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white ${
+                          !parseCaptionsLoading 
+                            ? 'bg-purple-600 hover:bg-purple-700' 
+                            : 'bg-gray-400'
+                        } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500`}
+                      >
+                        {parseCaptionsLoading ? 'Parsing Captions...' : 'Parse Captions'}
+                      </button>
+                      
+                      {parseCaptionsError && (
+                        <p className="text-red-600 text-sm mt-2">{parseCaptionsError}</p>
+                      )}
+                      
+                      {Object.keys(captionData).length > 0 && (
+                        <p className="text-green-600 dark:text-green-400 text-sm mt-2">
+                          Successfully parsed {Object.keys(captionData).length} caption entries!
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -399,26 +548,40 @@ const VideoDetail = () => {
               </div>
             )}
             
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {(currentKeyframeStatus?.keyframes || keyframes.map(k => k.url)).map((keyframe, index) => (
-                <div 
-                  key={index}
-                  className={`cursor-pointer hover:opacity-75 transition-opacity duration-200 aspect-w-16 aspect-h-9 ${
-                    currentKeyframe === keyframe ? 'ring-4 ring-blue-500 dark:ring-blue-400' : ''
-                  }`}
-                  onClick={() => setCurrentKeyframe(keyframe)}
-                >
-                  <img 
-                    src={keyframe.startsWith('http') ? keyframe : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${keyframe}`} 
-                    alt={`Keyframe ${index + 1}`} 
-                    className="object-cover w-full h-full rounded-md shadow-sm" 
-                    onError={(e) => {
-                      console.error('Failed to load image:', keyframe);
-                      e.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjY2NjIi8+PHRleHQgeD0iNSIgeT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmaWxsPSIjMzMzIj4/PC90ZXh0Pjwvc3ZnPg==';
-                    }}  
-                  />
-                </div>
-              ))}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
+              {(currentKeyframeStatus?.keyframes || keyframes.map(k => k.url)).map((keyframe, index) => {
+                const allKeyframes = currentKeyframeStatus?.keyframes || keyframes.map(k => k.url);
+                const captionText = Object.keys(captionData).length > 0 ? 
+                  findCaptionForKeyframe(index, allKeyframes.length) : null;
+                
+                return (
+                  <div 
+                    key={index}
+                    className={`cursor-pointer hover:opacity-75 transition-opacity duration-200 flex flex-col ${
+                      currentKeyframe === keyframe ? 'ring-4 ring-blue-500 dark:ring-blue-400 rounded-md' : ''
+                    }`}
+                  >
+                    <div className="aspect-w-16 aspect-h-9 mb-2" onClick={() => setCurrentKeyframe(keyframe)}>
+                      <img 
+                        src={keyframe.startsWith('http') ? keyframe : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${keyframe}`} 
+                        alt={`Keyframe ${index + 1}`} 
+                        className="object-cover w-full h-full rounded-md shadow-sm" 
+                        onError={(e) => {
+                          console.error('Failed to load image:', keyframe);
+                          e.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjY2NjIi8+PHRleHQgeD0iNSIgeT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmaWxsPSIjMzMzIj4/PC90ZXh0Pjwvc3ZnPg==';
+                        }}  
+                      />
+                    </div>
+                    {captionText && (
+                      <div className="mt-1 px-1">
+                        <p className="text-sm font-medium text-gray-800 dark:text-gray-200 line-clamp-3">
+                          {captionText}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
