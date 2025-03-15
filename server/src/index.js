@@ -20,7 +20,7 @@ const PORT = process.env.PORT || 5000;
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:5173", // Vite default dev server port
+    origin: ["http://localhost:5173", "http://localhost:4173"], // Vite dev and preview ports
     methods: ["GET", "POST"]
   }
 });
@@ -35,11 +35,72 @@ if (!fs.existsSync(videosDir)) {
   fs.mkdirSync(videosDir, { recursive: true });
 }
 
-// Serve static files from videos directory
+// Serve static files from videos directory (requires authentication)
 app.use('/videos', authenticateToken, express.static(videosDir));
 
-// Middleware
-app.use(cors());
+// Serve keyframe images through the API route to avoid conflicts with the frontend
+app.get('/api/keyframe-images/:uuid/:filename', (req, res) => {
+  // Set CORS headers for images to allow them to be loaded in the frontend
+  res.set({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Cache-Control': 'public, max-age=86400' // Cache for 24 hours
+  });
+  
+  const { uuid, filename } = req.params;
+  const imagePath = path.join(videosDir, uuid, 'keyframes', filename);
+  
+  console.log('Request for keyframe image:', imagePath);
+  
+  // Check if file exists
+  if (fs.existsSync(imagePath)) {
+    console.log('File exists, sending...');
+    // Set the correct content type for JPG files
+    res.set('Content-Type', 'image/jpeg');
+    // Send the file with the correct headers
+    fs.createReadStream(imagePath).pipe(res);
+  } else {
+    console.log('File not found:', imagePath);
+    res.status(404).send('Image not found');
+  }
+});
+
+// Debug route to list available keyframes
+app.get('/api/debug/keyframes/:uuid', (req, res) => {
+  const { uuid } = req.params;
+  const keyframesPath = path.join(videosDir, uuid, 'keyframes');
+  
+  if (fs.existsSync(keyframesPath)) {
+    const files = fs.readdirSync(keyframesPath)
+      .filter(file => file.endsWith('.jpg'))
+      .map(file => ({
+        filename: file,
+        url: `/api/keyframe-images/${uuid}/${file}`,
+        path: path.join(keyframesPath, file)
+      }));
+    
+    res.json({ 
+      directory: keyframesPath,
+      exists: true,
+      fileCount: files.length,
+      files: files
+    });
+  } else {
+    res.json({ 
+      directory: keyframesPath,
+      exists: false,
+      error: 'Directory not found'
+    });
+  }
+});
+
+// Middleware - enhanced CORS configuration
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:4173'], // Vite dev and preview ports
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // Routes
@@ -151,7 +212,7 @@ app.get('/api/videos/:id', authenticateToken, (req, res) => {
     // Format keyframes for client
     const formattedKeyframes = keyframes.map(keyframe => ({
       ...keyframe,
-      url: `/videos/${path.basename(video.directory_path)}/keyframes/${keyframe.filename}`
+      url: `/api/keyframe-images/${path.basename(video.directory_path)}/${keyframe.filename}`
     }));
     
     // Format versions
@@ -606,7 +667,7 @@ function extractKeyframes(videoPath, outputDir, videoId, socketId) {
         status: 'completed',
         message: 'Keyframe extraction complete!',
         keyframeCount: keyframeFiles.length,
-        keyframes: keyframeFiles.map(file => `/videos/${path.basename(outputDir)}/keyframes/${file}`)
+        keyframes: keyframeFiles.map(file => `/api/keyframe-images/${path.basename(outputDir)}/${file}`)
       });
     });
   });

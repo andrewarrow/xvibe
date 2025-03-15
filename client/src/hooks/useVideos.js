@@ -19,7 +19,8 @@ const useVideos = () => {
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:5000/api/videos', {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/videos`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -48,7 +49,8 @@ const useVideos = () => {
     setDetailsError(null);
 
     try {
-      const response = await fetch(`http://localhost:5000/api/videos/${videoId}`, {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/videos/${videoId}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }

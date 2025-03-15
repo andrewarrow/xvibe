@@ -15,7 +15,8 @@ const useSocket = () => {
 
   useEffect(() => {
     // Initialize socket
-    const socketInstance = io('http://localhost:5000');
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const socketInstance = io(API_URL);
     
     socketInstance.on('connect', () => {
       setConnected(true);
@@ -123,7 +124,8 @@ const useSocket = () => {
     }
     
     try {
-      const response = await fetch('http://localhost:5000/api/download-video', {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/download-video`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,7 +157,8 @@ const useSocket = () => {
     }
     
     try {
-      const response = await fetch('http://localhost:5000/api/convert-video', {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/convert-video`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -187,7 +190,8 @@ const useSocket = () => {
     }
     
     try {
-      const response = await fetch(`http://localhost:5000/api/videos/${videoId}/keyframes`, {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${API_URL}/api/videos/${videoId}/keyframes`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

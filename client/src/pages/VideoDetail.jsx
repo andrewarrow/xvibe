@@ -296,9 +296,13 @@ const VideoDetail = () => {
             {currentKeyframe && (
               <div className="mb-6">
                 <img 
-                  src={currentKeyframe} 
+                  src={currentKeyframe?.startsWith('http') ? currentKeyframe : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${currentKeyframe}`} 
                   alt="Selected Keyframe" 
                   className="max-w-full h-auto rounded-md shadow-md mx-auto" 
+                  onError={(e) => {
+                    console.error('Failed to load image:', currentKeyframe);
+                    e.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjY2NjIi8+PHRleHQgeD0iNSIgeT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmaWxsPSIjMzMzIj4/PC90ZXh0Pjwvc3ZnPg==';
+                  }}
                 />
               </div>
             )}
@@ -313,9 +317,13 @@ const VideoDetail = () => {
                   onClick={() => setCurrentKeyframe(keyframe)}
                 >
                   <img 
-                    src={keyframe} 
+                    src={keyframe.startsWith('http') ? keyframe : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${keyframe}`} 
                     alt={`Keyframe ${index + 1}`} 
                     className="object-cover w-full h-full rounded-md shadow-sm" 
+                    onError={(e) => {
+                      console.error('Failed to load image:', keyframe);
+                      e.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjY2NjIi8+PHRleHQgeD0iNSIgeT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmaWxsPSIjMzMzIj4/PC90ZXh0Pjwvc3ZnPg==';
+                    }}  
                   />
                 </div>
               ))}
