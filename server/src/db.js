@@ -1,0 +1,34 @@
+import Database from 'better-sqlite3';
+import bcrypt from 'bcrypt';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const dbPath = path.join(__dirname, '../db/database.sqlite');
+const db = new Database(dbPath);
+
+// Initialize database with tables
+export const initializeDatabase = () => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Check if test user exists
+  const testUser = db.prepare('SELECT * FROM users WHERE username = ?').get('andrewarrow');
+  
+  // If test user doesn't exist, create it
+  if (!testUser) {
+    const hashedPassword = bcrypt.hashSync('testing', 10);
+    db.prepare('INSERT INTO users (username, password) VALUES (?, ?)').run('andrewarrow', hashedPassword);
+    console.log('Test user created: andrewarrow');
+  }
+};
+
+export default db;
